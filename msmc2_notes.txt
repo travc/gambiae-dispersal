@@ -1,0 +1,139 @@
+## Notes for running MSMC2
+# by Hanno Schmidt
+
+###### make mappability masks for the reference genome
+###### perform workflow independently for every scaffold/chromosome of the genome to be used
+###### see also http://lh3lh3.users.sourceforge.net/snpable.shtml
+
+# extract the respective chromosome
+samtools faidx path/to/genomeX.fa chrom1 > chrom1_genomeX.fa
+
+# index the chromosome
+bwa index chrom1_genomeX.fa
+
+# extract overlapping kmers as artificial reads (the 150 refers to the read length used in re-sequencing)
+splitfa chrom1_genomeX.fa 150 > chrom1_genomeX_150splits.fa
+
+# map the artificial reads back on the chromosome (-t 20 is the number of threads, can change, leave other settings as is)
+bwa aln -t 20 -R 1000000 -O 3 -E 3 chrom1_genomeX.fa chrom1_genomeX_150splits.fa > chrom1_genomeX_150splits_bwaaln.sai
+
+# convert the *.sai file to *.sam
+bwa samse chrom1_genomeX.fa chrom1_genomeX_150splits_bwaaln.sai chrom1_genomeX_150splits.fa > chrom1_genomeX_150splits_bwaaln.sam
+
+# compresss output
+bgzip chrom1_genomeX_150splits_bwaaln.sam
+
+# generate the raw mask file
+gzip -dc chrom1_genomeX_150splits_bwaaln.sam.gz | gen_raw_mask.pl > rawMask_chrom1_genomeX_150.fa
+
+# convert the mask file
+gen_mask -l 145 -r 0.5 rawMask_chrom1_genomeX_150.fa > mask_chrom1_genomeX_150_50.fa
+
+# convert the mask file to bed format > script in msmc tools > customize path and name in script to mask file and output (only 2 rows)
+./makeMappabilityMask.py
+>> final file called chrom1.mask.bed.gz
+
+
+
+###### mapping of the reads to the reference genome was done by Yoosook with snakemake
+###### this applies bwa mem with default settings; *.sam files are afterwards indexed, PCR duplicates marked and realigned around indels
+###### SNP calling was performed by Yoosook with FreeBayes
+
+
+
+###### phasing of haplotypes
+###### at this point we need to have individual *.vcf files for every sample with every chromosome (number samples * number chromosomes)
+###### it is assumed that only biallelic SNPs are in the *.vcf files - otherwise filter now (with bcftools view)
+
+# make a list of samples
+find ./ -maxdepth 1 -name '*.vcf' > list_samples
+> change entries in list so they are only the sample's names (plus here you will receive multiple entries per sample due to the splitting by chromosome; go elsewhere...)
+
+# compresss *.vcf files
+bgzip sampleX_chrom1.vcf
+# consecutive batch
+for z in *.vcf; do bgzip $z; done
+
+# index the *.vcf files
+bcftools index sampleX_chrom1.vcf.gz
+# consecutive batch
+for f in *vcf.gz; do bcftools index $f; done
+
+# merge *.vcf files by chromosome
+bcftools merge *_chrom1.vcf.gz > all_samples_chrom1.vcf.gz
+
+# filter data to exclude individuals and sites with missing data (>5%)
+vcftools --gzvcf all_samples_chrom1.vcf.gz --remove samples_2_exclude.txt --max-missing 0.95 --recode --recode-INFO-all all_samples_chrom1_filtered # (results in file all_samples_chrom1_filtered.recode.vcf)
+> rename and gzip the output file to all_samples_chrom1_filtered.vcf.gz
+
+# phase data with shapeit
+shapeit -V all_samples_chrom1.vcf.gz -O all_samples_chrom1_shapeit.out --output-log all_samples_chrom1_shapeit.log
+
+# convert haplotypes back to vcf
+shapeit -convert --input-haps all_samples_chrom1_shapeit.out --output-vcf all_samples_chrom1_phased_raw.vcf --output-log all_samples_chrom1_phased.log
+sed '5i ##contig=<ID=X>' all_samples_chrom1_phased_raw.vcf > all_samples_chrom1_phased.vcf
+
+# separate the individuals again
+while read f; do bcftools view -s $f all_samples_chrom1_phased.vcf -o $f"_chrom1_phased.vcf"; done < list_samples
+cat extract_samples | parallel --eta -j 20 --load 80% --noswap '{}'
+
+# prepare *.bed files for upcoming analyses
+convert2bed -i vcf < sampleX_chrom1_phased.vcf > sampleX_chrom1_phased.vcf.bed
+for z in *.vcf.bed; do bgzip $z; done
+
+# compresss *.vcf files
+for f in *_phased.vcf; do bgzip $f; done
+
+# index *.vcf files
+for f in *phased.vcf.gz; do bcftools index $f; done
+>> the *.vcf files are ready for use
+
+
+
+###### MSMC2 analyses
+###### 
+###### 
+
+###### population size estimation based on four specimens
+
+# generate multihetsep files for every combination (i.e. population) to be tested
+source activate py34 # python 3.4 needed for msmc2 scripts
+generate_multihetsep.py --mask chrom1.mask.bed.gz --mask sampleX_chrom1_phased.vcf.bed.gz --mask sampleY_chrom1_phased.vcf.bed.gz --mask sampleZ_chrom1_phased.vcf.bed.gz sampleX_chrom1_phased.vcf.gz sampleY_chrom1_phased.vcf.gz sampleZ_chrom1_phased.vcf.gz > multihetsep_2L_PopName.txt   # Note: firstly include the masks (mappability & samples) by --mask and then all individual's VCF (separated by white spaces) without any prefix
+
+# run the MSMC2 main analysis
+msmc2 -t 10 -I 0,1,2,3,4,5 -o sampleX_sample_Y_sampleZ /path/to/multihetsep_chrom1_PopName.txt /path/to/multihetsep_chrom2_PopName.txt ...
+
+# generate within population files with values in years and population sizes Ne in individuals ; an additional column with the number of years per time slices will be inserted as $4
+tail -n +2 msmc2_output.final.txt | awk '{ print $1 "\t" ($2/0.00000000285)*0.1 "\t" ($3/0.00000000285)*0.1 "\t" (1/$4)/(2*0.00000000285)}' | awk '{printf "%d %d %d %d\n", $1 , $2 , $3 , $4}'  | awk '{print $1 "\t" $2 "\t" $3 "\t" $3-($2+1) "\t" $4}' > msmc2_output_formatted.txt
+
+###### Make plots
+
+awk '{for (i = 1; i <= $4; i++) print $5}' msmc2_output_formatted.txt > msmc2_run_values.txt
+
+# start R
+values_popname <- read.table("msmc2_run_values.txt", header=FALSE)
+pop_popname <- values_popname [,1]
+
+source("plot_pop_sizes.R")
+
+
+###### cross-coalescence rate estimations
+
+# generate multihetsep files for every combination (i.e. population) to be tested
+just as above
+
+# run the MSMC2 main analysis
+msmc2 -t 10 -P 0,0,0,0,1,1,1,1 -o pop1_vs_pop2 /path/to/multihetsep_chrom1_pop1_vs_pop2.txt /path/to/multihetsep_chrom2_pop1_vs_pop2.txt ...
+
+# combine the output of the cross-coalescence estimation with the two population size estimation files
+combineCrossCoal.py pop1_vs_pop2.final.txt msmc2_runs/pop1_4specimens.final.txt msmc2_runs/pop2_4specimens.final.txt > pop1_vs_pop2_combined_msmc.final.txt
+
+# compute the relative cross-coalescence rate
+tail -n +2 pop1_vs_pop2_combined_msmc.final.txt | awk '{ print $1 "\t" ($2/0.00000000285)*0.1 "\t" ($3/0.00000000285)*0.1 "\t" (2*$5)/($4+$6)}' | awk '{printf "%d %d %d %6f\n", $1 , $2 , $3 , $4}'  | awk '{print $1 "\t" $2 "\t" $3 "\t" $3-($2+1) "\t" $4}' > pop1_vs_pop2_relative_CC.txt
+
+###### Make plots
+
+awk '{for (i = 1; i <= $4; i++) print $5}' pop1_vs_pop2_relative_CC.txt > pop1_vs_pop2_CC_run_values.txt
+
+# start R
+source("plot_cross-coalescence-rates.R")
