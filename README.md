@@ -18,12 +18,12 @@ Mbanga Muleba, Douglas E. Norris, Montgomery Slatkin, Anthony J. Cornel, Gregory
 
 ## MSMC2 analysis
 Link to MSMC2 code : https://github.com/stschiff/msmc2
-msmc2_notes.txt : Working notes on how msmc2 was run
-msmc2_sequential.sh : script runing sequential 4 specimen analyses
-msmc2_CC.sh : script for cross-coalescence pairs
-msmc2_CC_CO_vs_EA.sh : script for cross-coalescence Comoros vs East Africa only
-msmc2_Ne_data.hdf (data) 
-msmc2_RCC_data.hdf (data) 
-MSMC_plot-v2.ipynb : 
+- `msmc2_notes.txt` : Working notes on how msmc2 was run
+- `msmc2_sequential.sh` : script runing sequential 4 specimen analyses
+- `msmc2_CC.sh` : script for cross-coalescence pairs
+- `msmc2_CC_CO_vs_EA.sh` : script for cross-coalescence Comoros vs East Africa only
+- `msmc2_Ne_data.hdf` (data) 
+- `msmc2_RCC_data.hdf` (data) 
+- `MSMC_plot-v2.ipynb` : script which creates the msmc2 results figure
 
 
